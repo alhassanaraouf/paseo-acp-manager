@@ -23,7 +23,9 @@ Then open **ACP Manager** in the sidebar.
 
 ## Screenshots
 
-_TODO: add screenshots._
+| Overview | Quick add |
+| --- | --- |
+| ![ACP providers overview](images/main.png) | ![Quick add from the ACP agent registry](images/quick-add.png) |
 
 ## Known issues
 
