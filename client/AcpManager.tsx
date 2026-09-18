@@ -33,9 +33,16 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
   });
   const [form, setForm] = useState(NEW_FORM);
   const [editing, setEditing] = useState<string | null>(null);
+  const [advanced, setAdvanced] = useState("");
+  const [advancedErr, setAdvancedErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [testOut, setTestOut] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [draftTest, setDraftTest] = useState<{ ok: boolean; text: string } | null>(null);
+  const [draftTesting, setDraftTesting] = useState(false);
+  const [autoReload, setAutoReload] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [tab, setTab] = useState<"providers" | "catalog">("providers");
   const pad = layout.compact ? 12 : 20;
@@ -134,7 +141,7 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
     catalogRow: { flexDirection: "row" as const, gap: 10, flexWrap: "wrap" as const },
     catalogCard: {
       width: layout.compact ? ("100%" as const) : 260,
-      height: 172,
+      minHeight: 196,
       padding: 12,
       gap: 6,
       borderRadius: 10,
@@ -181,6 +188,74 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
     void qc.invalidateQueries({ queryKey: ["acp.list"] });
   };
   const fail = (e: unknown) => setErr(e instanceof Error ? e.message : String(e));
+  const invalidateTest = (id: string) =>
+    setTestOut((m) => {
+      if (!(id in m)) return m;
+      const next = { ...m };
+      delete next[id];
+      return next;
+    });
+
+  function resetForm() {
+    setForm(NEW_FORM);
+    setEditing(null);
+    setAdvanced("");
+    setAdvancedErr(null);
+    setDraftTest(null);
+    setShowForm(false);
+  }
+
+  function maybeReload(r: { backupPath: string }) {
+    if (!autoReload) return ` Saved. Backup: ${r.backupPath}. Click "Reload Paseo" to apply.`;
+    void reload({})
+      .then(() => {
+        setMsg((m) => `${m ?? ""} Reloaded.`.trim());
+        refresh();
+      })
+      .catch((e: unknown) => fail(e));
+    return " Saved. Reloading Paseo…";
+  }
+
+  function parseAdvanced(): Record<string, unknown> {
+    if (!advanced.trim()) return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(advanced);
+    } catch {
+      throw new Error("Advanced JSON is not valid JSON");
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("Advanced JSON must be an object");
+    }
+    const allowed = ["params", "models", "additionalModels", "disallowedTools", "order"];
+    const out: Record<string, unknown> = {};
+    for (const k of allowed) {
+      if (k in (parsed as Record<string, unknown>)) out[k] = (parsed as Record<string, unknown>)[k];
+    }
+    return out;
+  }
+
+  function advancedOf(entry: Record<string, unknown>): string {
+    const out: Record<string, unknown> = {};
+    for (const k of ["params", "models", "additionalModels", "disallowedTools", "order"]) {
+      if (entry[k] !== undefined) out[k] = entry[k];
+    }
+    return Object.keys(out).length ? JSON.stringify(out, null, 2) : "";
+  }
+
+  function draftEntry() {
+    const command = parseCommandString(form.command);
+    const env = form.env.trim() ? parseEnvLines(form.env) : undefined;
+    return {
+      extends: "acp" as const,
+      label: form.label.trim(),
+      description: form.description.trim() || undefined,
+      command,
+      env,
+      enabled: form.enabled,
+      ...parseAdvanced(),
+    };
+  }
 
   async function onReloadPaseo() {
     setErr(null);
@@ -197,29 +272,62 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
   async function onSave() {
     setErr(null);
     setMsg(null);
+    setAdvancedErr(null);
+    let entry;
     try {
-      const command = parseCommandString(form.command);
-      const env = form.env.trim() ? parseEnvLines(form.env) : undefined;
-      const r = await save({
-        id: form.id.trim(),
-        entry: {
-          extends: "acp",
-          label: form.label.trim(),
-          description: form.description.trim() || undefined,
-          command,
-          env,
-          enabled: form.enabled,
-        },
-        editing: editing !== null,
-      });
-      setMsg(`Saved. Backup: ${r.backupPath}. Click "Reload Paseo" to apply.`);
-      setForm(NEW_FORM);
-      setEditing(null);
-      setShowForm(false);
+      entry = draftEntry();
+    } catch (e) {
+      setAdvancedErr(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    try {
+      const id = form.id.trim();
+      const r = await save({ id, entry, editing: editing !== null });
+      setMsg(`Saved "${id}". Backup: ${r.backupPath}.${maybeReload(r)}`);
+      invalidateTest(id);
+      resetForm();
       refresh();
     } catch (e) {
       fail(e);
     }
+  }
+
+  async function onTestDraft() {
+    setErr(null);
+    setDraftTest(null);
+    let entry;
+    try {
+      entry = draftEntry();
+    } catch (e) {
+      setAdvancedErr(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    if (!entry.command.length) {
+      setErr("Command is empty — enter a command to test.");
+      return;
+    }
+    setDraftTesting(true);
+    try {
+      const r = await test({ command: entry.command, env: entry.env });
+      setDraftTest(
+        r.ok
+          ? { ok: true, text: `OK ${JSON.stringify(r.capabilities ?? {}).slice(0, 200)}` }
+          : { ok: false, text: `FAIL: ${r.error}` },
+      );
+    } catch (e) {
+      fail(e);
+    } finally {
+      setDraftTesting(false);
+    }
+  }
+
+  function openAdd() {
+    setEditing(null);
+    setForm(NEW_FORM);
+    setAdvanced("");
+    setAdvancedErr(null);
+    setDraftTest(null);
+    setShowForm(true);
   }
 
   function quickAdd(item: AcpCatalogEntry) {
@@ -228,6 +336,9 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
     setShowForm(true);
     setErr(null);
     setMsg(null);
+    setAdvanced("");
+    setAdvancedErr(null);
+    setDraftTest(null);
     setForm({
       id: item.id,
       label: item.label,
@@ -241,6 +352,8 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
   function startEdit(id: string, entry: Record<string, unknown>) {
     setEditing(id);
     setShowForm(true);
+    setAdvancedErr(null);
+    setDraftTest(null);
     setForm({
       id,
       label: String(entry["label"] ?? ""),
@@ -249,6 +362,7 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
       env: envToLines(entry["env"] as Record<string, string> | undefined),
       enabled: entry["enabled"] !== false,
     });
+    setAdvanced(advancedOf(entry));
   }
 
   async function onTest(id: string, entry: Record<string, unknown>) {
@@ -274,6 +388,10 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
     setMsg(null);
     try {
       const enabled = entry["enabled"] !== false;
+      const rest: Record<string, unknown> = {};
+      for (const k of ["params", "models", "additionalModels", "disallowedTools", "order"]) {
+        if (entry[k] !== undefined) rest[k] = entry[k];
+      }
       const r = await save({
         id,
         entry: {
@@ -283,12 +401,14 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
           command: entry["command"] as string[],
           env: entry["env"] as Record<string, string> | undefined,
           enabled: !enabled,
+          ...rest,
         },
         editing: true,
       });
       setMsg(
-        `${enabled ? "Disabled" : "Enabled"} "${id}". Backup: ${r.backupPath}. Click "Reload Paseo" to apply.`,
+        `${enabled ? "Disabled" : "Enabled"} "${id}". Backup: ${r.backupPath}.${maybeReload(r)}`,
       );
+      invalidateTest(id);
       refresh();
     } catch (e) {
       fail(e);
@@ -300,12 +420,20 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
     setMsg(null);
     try {
       const r = await remove({ id });
-      setMsg(`Removed "${id}". Backup: ${r.backupPath}. Click "Reload Paseo" to apply.`);
+      setMsg(`Removed "${id}". Backup: ${r.backupPath}.${maybeReload(r)}`);
+      invalidateTest(id);
+      setConfirmDelete(null);
       refresh();
     } catch (e) {
       fail(e);
     }
   }
+
+  const catalogEntries = (catalogQ.data?.entries ?? []).filter((c) => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return true;
+    return `${c.label} ${c.id} ${c.description}`.toLowerCase().includes(needle);
+  });
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
@@ -389,15 +517,7 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
               : `${acpProviders.length} provider${acpProviders.length === 1 ? "" : "s"} configured, ${enabledCount} enabled. Add another or run Test to confirm it starts.`}
           </Text>
           <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                setEditing(null);
-                setForm(NEW_FORM);
-                setShowForm(true);
-              }}
-              style={styles.btn}
-            >
+            <Pressable accessibilityRole="button" onPress={openAdd} style={styles.btn}>
               <Text style={styles.btnText}>Add custom provider</Text>
             </Pressable>
             <Pressable accessibilityRole="button" onPress={refresh} style={styles.pillBtn}>
@@ -510,11 +630,14 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
                     <Pressable
                       accessibilityRole="button"
                       onPress={() => {
-                        void onRemove(p.id);
+                        if (confirmDelete === p.id) void onRemove(p.id);
+                        else setConfirmDelete(p.id);
                       }}
                       style={[styles.pillBtn, { marginLeft: "auto" as const }]}
                     >
-                      <Text style={styles.danger}>Delete</Text>
+                      <Text style={styles.danger}>
+                        {confirmDelete === p.id ? "Confirm delete?" : "Delete"}
+                      </Text>
                     </Pressable>
                   </View>
                 </View>
@@ -535,8 +658,18 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
                   {catalogQ.isFetching ? "Refreshing…" : "Refresh"}
                 </Text>
               </Pressable>
-              <Text style={styles.muted}>From the ACP agent registry</Text>
+              <TextInput
+                style={[styles.input, { flexGrow: 1, minWidth: 140 }]}
+                value={search}
+                onChangeText={setSearch}
+                placeholderTextColor={theme.colors.foregroundMuted}
+                placeholder="Search agents…"
+              />
             </View>
+            <Text style={styles.muted}>
+              From the ACP agent registry
+              {catalogQ.data ? ` · ${catalogEntries.length}/${catalogQ.data.entries.length}` : ""}
+            </Text>
             {catalogQ.isLoading ? (
               <Text style={styles.muted}>Loading agent registry…</Text>
             ) : catalogQ.error ? (
@@ -545,7 +678,7 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
               </Text>
             ) : (
               <View style={styles.catalogRow}>
-                {(catalogQ.data?.entries ?? []).map((c) => {
+                {catalogEntries.map((c) => {
                   const added = acpProviders.some((p) => p.id === c.id);
                   const disabled = added || !c.command;
                   return (
@@ -565,6 +698,11 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
                           No npx/uvx package — install manually
                         </Text>
                       )}
+                      {c.env && Object.keys(c.env).length > 0 ? (
+                        <Text style={styles.warn} numberOfLines={2}>
+                          Needs {Object.keys(c.env).join(", ")} — set before saving
+                        </Text>
+                      ) : null}
                       <Pressable
                         accessibilityRole="button"
                         disabled={disabled}
@@ -589,24 +727,13 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
         visible={showForm}
         animationType="slide"
         transparent
-        onRequestClose={() => {
-          setEditing(null);
-          setForm(NEW_FORM);
-          setShowForm(false);
-        }}
+        onRequestClose={resetForm}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <View style={styles.headerRow}>
               <Text style={styles.sectionTitle}>{editing ? `Edit ${editing}` : "Add provider"}</Text>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => {
-                  setEditing(null);
-                  setForm(NEW_FORM);
-                  setShowForm(false);
-                }}
-              >
+              <Pressable accessibilityRole="button" onPress={resetForm}>
                 <Text style={styles.muted}>Cancel</Text>
               </Pressable>
             </View>
@@ -643,6 +770,47 @@ export function AcpManager({ theme, layout }: PluginSurfaceProps) {
                   enabled: {form.enabled ? "yes" : "no"} (tap to toggle)
                 </Text>
               </Pressable>
+              <View style={{ gap: 4, marginTop: 12 }}>
+                <Text style={styles.muted}>
+                  advanced JSON (optional: params, models, additionalModels, disallowedTools, order)
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={advanced}
+                  onChangeText={(t) => {
+                    setAdvanced(t);
+                    setAdvancedErr(null);
+                  }}
+                  placeholderTextColor={theme.colors.foregroundMuted}
+                  placeholder='{"models": [{"id": "model-id", "label": "Model"}]}'
+                  multiline
+                />
+                {advancedErr ? <Text style={styles.danger}>{advancedErr}</Text> : null}
+              </View>
+              {draftTest ? (
+                <Text style={draftTest.ok ? styles.ok : styles.danger}>{draftTest.text}</Text>
+              ) : null}
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    void onTestDraft();
+                  }}
+                  style={[styles.pillBtn, { flexGrow: 1 }]}
+                >
+                  <Text style={styles.pillBtnText}>
+                    {draftTesting ? "Testing…" : "Test before saving"}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    setAutoReload((v) => !v);
+                  }}
+                >
+                  <Text style={styles.body}>auto-reload: {autoReload ? "on" : "off"}</Text>
+                </Pressable>
+              </View>
               <Pressable
                 accessibilityRole="button"
                 onPress={() => {
