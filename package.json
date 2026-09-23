@@ -1,5 +1,5 @@
 {
-  "name": "paseo-acp-manager",
+  "name": "@alhassanaraouf/paseo-acp-manager",
   "description": "Paseo sidebar plugin for managing ACP custom providers: add, edit, enable/disable, test, and quick-add from the ACP agent registry.",
   "version": "0.1.0",
   "license": "MIT",
