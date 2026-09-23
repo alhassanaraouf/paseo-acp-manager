@@ -16,7 +16,7 @@ Sidebar UI for managing official ACP custom providers: `agents.providers` entrie
 ## Install
 
 ```bash
-paseo plugin install npm:@alhassanaraouf/paseo-acp-manager
+paseo plugin add npm:@alhassanaraouf/paseo-acp-manager
 ```
 
 Or from GitHub:
