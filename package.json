@@ -1,7 +1,6 @@
 {
-  "name": "acp-manager",
+  "name": "paseo-acp-manager",
   "description": "Paseo sidebar plugin for managing ACP custom providers: add, edit, enable/disable, test, and quick-add from the ACP agent registry.",
-  "private": true,
   "version": "0.1.0",
   "license": "MIT",
   "repository": {
@@ -9,6 +8,24 @@
     "url": "https://github.com/alhassanaraouf/paseo-acp-manager"
   },
   "author": "Al-Hassan Abdel-Raouf",
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "acp",
+    "agent-client-protocol",
+    "providers"
+  ],
+  "files": [
+    "paseo-plugin.json",
+    "index.client.tsx",
+    "index.server.ts",
+    "client/",
+    "server/",
+    "shared/",
+    "images/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
